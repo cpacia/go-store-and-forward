@@ -37,11 +37,11 @@ type Client struct {
 	host            host.Host
 	ctx             context.Context
 	mtx             sync.RWMutex
-	key             crypto.PrivKey
+	sk              crypto.PrivKey
 	protocol        protocol.ID
 }
 
-func NewClient(ctx context.Context, key crypto.PrivKey, peers []peer.ID, h host.Host, opts ...Option) (*Client, error) {
+func NewClient(ctx context.Context, sk crypto.PrivKey, peers []peer.ID, h host.Host, opts ...Option) (*Client, error) {
 	var cfg Options
 	if err := cfg.Apply(append([]Option{Defaults}, opts...)...); err != nil {
 		return nil, err
@@ -58,11 +58,12 @@ func NewClient(ctx context.Context, key crypto.PrivKey, peers []peer.ID, h host.
 		recentlyRelayed: make(map[string]bool),
 		host:            h,
 		ctx:             ctx,
+		sk:              sk,
 		mtx:             sync.RWMutex{},
 		protocol:        cfg.Protocols[0],
 	}
 
-	if !h.ID().MatchesPrivateKey(key) {
+	if !h.ID().MatchesPrivateKey(sk) {
 		return nil, errors.New("private key does not match host peer ID")
 	}
 
@@ -71,6 +72,10 @@ func NewClient(ctx context.Context, key crypto.PrivKey, peers []peer.ID, h host.
 	}
 	if len(cfg.Protocols) == 0 {
 		return nil, errors.New("protocol option is required")
+	}
+
+	for _, protocol := range cfg.Protocols {
+		h.SetStreamHandler(protocol, c.handleNewStream)
 	}
 
 	go c.registerWithPeers(cfg.RegistrationDuration)
@@ -147,6 +152,8 @@ func (cli *Client) AckMessage(ctx context.Context, messageID []byte) error {
 				}
 				defer s.Close()
 
+				contextReader := ctxio.NewReader(cli.ctx, s)
+				r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
 				w := ggio.NewDelimitedWriter(s)
 
 				err = writeMsgWithTimeout(w, &pb.Message{
@@ -160,6 +167,15 @@ func (cli *Client) AckMessage(ctx context.Context, messageID []byte) error {
 				if err != nil {
 					log.Errorf("Error sending MESSAGE_ACK to server %s", p)
 					return
+				}
+
+				resp := new(pb.Message)
+				if err = readMsgWithTimeout(r, resp); err != nil {
+					log.Errorf("Error reading MESSAGE_ACK response from server %s", p)
+					return
+				}
+				if resp.Code != pb.Message_SUCCESS {
+					log.Errorf("message ack to server %s failed with code: %s", p, resp.Code)
 				}
 			}(p)
 		}
@@ -198,7 +214,7 @@ func (cli *Client) GetMessages(ctx context.Context) ([]Message, error) {
 	return messages, nil
 }
 
-func (cli *Client) GetMessagesAsync(ctx context.Context) (chan<- Message, error) {
+func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error) {
 	var (
 		downloaded = make(map[string]bool)
 		mtx        = sync.Mutex{}
@@ -236,13 +252,16 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (chan<- Message, error)
 						log.Errorf("Error reading MESSAGE from server %s", p)
 						return
 					}
-
 					if pmes.Type != pb.Message_MESSAGE || pmes.GetEncryptedMessage() == nil {
 						log.Errorf("Server %s sending malformed MESSAGE", p)
 						return
 					}
-
 					enc := pmes.GetEncryptedMessage()
+
+					if !enc.More {
+						return
+					}
+
 					messageIDStr := hex.EncodeToString(enc.MessageID)
 					mtx.Lock()
 					_, ok := downloaded[messageIDStr]
@@ -254,9 +273,6 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (chan<- Message, error)
 						}
 					}
 					mtx.Unlock()
-					if !enc.More {
-						return
-					}
 				}
 			}(p)
 		}
@@ -269,7 +285,7 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (chan<- Message, error)
 	return resp, nil
 }
 
-func (cli *Client) SendMessage(ctx context.Context, server peer.ID, encryptedMsg []byte) error {
+func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, encryptedMessage []byte) error {
 	s, err := cli.host.NewStream(ctx, server, cli.protocol)
 	if err != nil {
 		return err
@@ -277,15 +293,28 @@ func (cli *Client) SendMessage(ctx context.Context, server peer.ID, encryptedMsg
 	defer s.Close()
 
 	w := ggio.NewDelimitedWriter(s)
+	contextReader := ctxio.NewReader(ctx, s)
+	r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
 	err = writeMsgWithTimeout(w, &pb.Message{
-		Type: pb.Message_MESSAGE,
+		Type: pb.Message_STORE_MESSAGE,
 		Payload: &pb.Message_EncryptedMessage_{
 			EncryptedMessage: &pb.Message_EncryptedMessage{
-				Message: encryptedMsg,
+				Message:  encryptedMessage,
+				ToPeerID: []byte(to),
 			},
 		},
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	resp := new(pb.Message)
+	if err = readMsgWithTimeout(r, resp); err != nil {
+		return err
+	}
+	if resp.Code != pb.Message_SUCCESS {
+		return fmt.Errorf("store failed with code: %s", resp.Code)
+	}
+	return nil
 }
 
 func (cli *Client) registerWithPeers(expiration time.Duration) {
@@ -317,7 +346,7 @@ func (cli *Client) registerWithPeers(expiration time.Duration) {
 }
 
 func (cli *Client) authenticate(peer peer.ID) (inet.Stream, error) {
-	s, err := cli.host.NewStream(cli.ctx, peer)
+	s, err := cli.host.NewStream(cli.ctx, peer, cli.protocol)
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +358,7 @@ func (cli *Client) authenticate(peer peer.ID) (inet.Stream, error) {
 	r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
 	w := ggio.NewDelimitedWriter(s)
 
-	pubkeyBytes, err := cli.key.GetPublic().Bytes()
+	pubkeyBytes, err := cli.sk.GetPublic().Bytes()
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +384,7 @@ func (cli *Client) authenticate(peer peer.ID) (inet.Stream, error) {
 		return nil, fmt.Errorf("server %s sent us invalid challenge message", peer)
 	}
 
-	sig, err := cli.key.Sign(challengeMsg.Challenge)
+	sig, err := cli.sk.Sign(challengeMsg.Challenge)
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +432,7 @@ func (cli *Client) registerSingle(peer peer.ID, expiration time.Duration) {
 			log.Errorf("Server %s authentication fail. Error: %s", peer, err)
 		}
 	} else {
-		s, err = cli.host.NewStream(cli.ctx, peer)
+		s, err = cli.host.NewStream(cli.ctx, peer, cli.protocol)
 		if err != nil {
 			log.Errorf("Server %s authentication fail. Error: %s", peer, err)
 			return

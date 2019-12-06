@@ -3,7 +3,6 @@ module go-store-and-forward
 go 1.13
 
 require (
-	github.com/cenkalti/backoff v2.2.1+incompatible
 	github.com/gogo/protobuf v1.2.1
 	github.com/golang/protobuf v1.3.0
 	github.com/ipfs/go-datastore v0.0.5
@@ -16,5 +15,6 @@ require (
 	github.com/libp2p/go-libp2p-peer v0.1.1
 	github.com/libp2p/go-libp2p-protocol v0.0.1
 	github.com/multiformats/go-base32 v0.0.3
+	github.com/multiformats/go-multiaddr v0.0.4
 	github.com/pkg/errors v0.8.1
 )

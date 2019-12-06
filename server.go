@@ -220,6 +220,8 @@ func (svr *Server) handleAuthenticate(s inet.Stream, r ggio.Reader, w ggio.Write
 	svr.authenticatedConns[peer] = true
 	svr.mtx.Unlock()
 
+	log.Infof("Peer %s authenticated successfully", peer)
+
 	// Write success response.
 	return writeStatusMessage(w, pb.Message_SUCCESS)
 }
@@ -232,7 +234,7 @@ func (svr *Server) handleRegister(w ggio.Writer, pmes *pb.Message, peer peer.ID)
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
 	}
 	var (
-		expiry = time.Unix(math.MaxUint64, 0)
+		expiry = time.Unix(math.MaxInt64, 0)
 		err    error
 	)
 	ts := regMsg.GetExpiry()
@@ -278,7 +280,7 @@ func (svr *Server) handleGetMessages(w ggio.Writer, pmes *pb.Message, peer peer.
 	if err != nil {
 		return err
 	}
-	if expiry.After(time.Now()) {
+	if expiry.Before(time.Now()) {
 		err := svr.ds.Delete(registrationKey(peer))
 		if err != nil {
 			return err
@@ -296,6 +298,16 @@ func (svr *Server) handleGetMessages(w ggio.Writer, pmes *pb.Message, peer peer.
 
 	for {
 		result, more := results.NextSync()
+		if !more {
+			return writeMsgWithTimeout(w, &pb.Message{
+				Type: pb.Message_MESSAGE,
+				Payload: &pb.Message_EncryptedMessage_{
+					EncryptedMessage: &pb.Message_EncryptedMessage{
+						More: more,
+					},
+				},
+			})
+		}
 
 		s := strings.Split(result.Key, "/")
 
@@ -317,11 +329,7 @@ func (svr *Server) handleGetMessages(w ggio.Writer, pmes *pb.Message, peer peer.
 		if err != nil {
 			return err
 		}
-		if !more {
-			break
-		}
 	}
-
 	return nil
 }
 
@@ -339,7 +347,7 @@ func (svr *Server) handleAckMessage(w ggio.Writer, pmes *pb.Message, peer peer.I
 	if err != nil {
 		return err
 	}
-	if expiry.After(time.Now()) {
+	if expiry.Before(time.Now()) {
 		err := svr.ds.Delete(registrationKey(peer))
 		if err != nil {
 			return err
@@ -352,7 +360,11 @@ func (svr *Server) handleAckMessage(w ggio.Writer, pmes *pb.Message, peer peer.I
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
 	}
 
-	return svr.ds.Delete(messageKey(peer, ack.MessageID))
+	if err := svr.ds.Delete(messageKey(peer, ack.MessageID)); err != nil {
+		return err
+	}
+
+	return writeStatusMessage(w, pb.Message_SUCCESS)
 }
 
 // handleStoreMessage stores the given message in the db with a random messageID.
@@ -380,7 +392,7 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 	if err != nil {
 		return err
 	}
-	if expiry.After(time.Now()) {
+	if expiry.Before(time.Now()) {
 		err := svr.ds.Delete(registrationKey(to))
 		if err != nil {
 			return err
@@ -395,6 +407,7 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 	id := sha256.Sum256(append(fromBytes, encMsg.Message...))
 
 	if err := svr.ds.Put(messageKey(to, id[:]), encMsg.Message); err != nil {
+
 		return err
 	}
 
@@ -413,7 +426,7 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 				Type: pb.Message_MESSAGE,
 				Payload: &pb.Message_EncryptedMessage_{
 					EncryptedMessage: &pb.Message_EncryptedMessage{
-						MessageID: id,
+						MessageID: id[:],
 						Message:   encMsg.Message,
 					},
 				},
@@ -423,7 +436,6 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 			}
 		}
 	}()
-
 	return writeStatusMessage(w, pb.Message_SUCCESS)
 }
 
