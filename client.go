@@ -1,9 +1,10 @@
-package go_store_and_forward
+package storeandforward
 
 import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"github.com/cpacia/go-store-and-forward/pb"
 	ggio "github.com/gogo/protobuf/io"
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
@@ -14,7 +15,6 @@ import (
 	peer "github.com/libp2p/go-libp2p-peer"
 	protocol "github.com/libp2p/go-libp2p-protocol"
 	"github.com/pkg/errors"
-	"go-store-and-forward/pb"
 	"io"
 	"math/rand"
 	"sync"

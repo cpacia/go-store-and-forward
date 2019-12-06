@@ -1,4 +1,4 @@
-module go-store-and-forward
+module github.com/cpacia/go-store-and-forward
 
 go 1.13
 

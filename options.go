@@ -1,4 +1,4 @@
-package go_store_and_forward
+package storeandforward
 
 import (
 	"fmt"

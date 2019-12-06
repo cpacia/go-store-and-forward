@@ -1,10 +1,11 @@
-package go_store_and_forward
+package storeandforward
 
 import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"github.com/cpacia/go-store-and-forward/pb"
 	ggio "github.com/gogo/protobuf/io"
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
@@ -18,7 +19,6 @@ import (
 	peer "github.com/libp2p/go-libp2p-peer"
 	protocol "github.com/libp2p/go-libp2p-protocol"
 	"github.com/multiformats/go-base32"
-	"go-store-and-forward/pb"
 	"io"
 	"strings"
 	"sync"

@@ -1,11 +1,11 @@
-package go_store_and_forward
+package storeandforward
 
 import (
 	"context"
 	"errors"
+	"github.com/cpacia/go-store-and-forward/pb"
 	ggio "github.com/gogo/protobuf/io"
 	"github.com/gogo/protobuf/proto"
-	"go-store-and-forward/pb"
 	"time"
 )
 
