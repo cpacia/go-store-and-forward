@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	ggio "github.com/gogo/protobuf/io"
+	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/ipfs/go-datastore"
 	"github.com/ipfs/go-datastore/query"
@@ -19,7 +20,6 @@ import (
 	"github.com/multiformats/go-base32"
 	"go-store-and-forward/pb"
 	"io"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -153,6 +153,8 @@ func (svr *Server) streamHandler(s inet.Stream) {
 				break
 			}
 			err = svr.handleAckMessage(writer, pmes, remotePeer)
+		case pb.Message_PROVE_REGISTRATION:
+			err = svr.handleProveRegistrationMessage(writer, pmes, remotePeer)
 		case pb.Message_STORE_MESSAGE:
 			err = svr.handleStoreMessage(writer, pmes, remotePeer)
 		case pb.Message_GET_MESSAGE:
@@ -265,29 +267,49 @@ func (svr *Server) handleAuthenticate(s inet.Stream, r ggio.Reader, w ggio.Write
 
 // handleRegister saves a user registration in the db. Duplicate registrations are allowed
 // and a prior registration is overridden.
-func (svr *Server) handleRegister(w ggio.Writer, pmes *pb.Message, peer peer.ID) error {
+func (svr *Server) handleRegister(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
 	regMsg := pmes.GetRegistration()
 	if regMsg == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
 	}
-	var (
-		expiry = time.Unix(math.MaxInt64, 0)
-		err    error
-	)
-	ts := regMsg.GetExpiry()
-	if ts != nil {
-		expiry, err = ptypes.Timestamp(ts)
-		if err != nil {
-			return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
-		}
+	if peer.ID(regMsg.Server) != svr.host.ID() {
+		return writeStatusMessage(w, pb.Message_PEERID_INVALID)
 	}
 
-	tsBytes, err := expiry.MarshalBinary()
+	var (
+		pubKey crypto.PubKey
+		err    error
+	)
+	if regMsg.GetPubkey() != nil {
+		pubKey, err = crypto.UnmarshalPublicKey(regMsg.GetPubkey())
+	} else {
+		pubKey, err = from.ExtractPublicKey()
+	}
+	if err != nil {
+		return writeStatusMessage(w, pb.Message_PUBKEY_INVALID)
+	}
+
+	m := proto.Clone(regMsg)
+	regCpy := m.(*pb.Message_Registration)
+	regCpy.Signature = nil
+	sigSer, err := proto.Marshal(regCpy)
+	if err != nil {
+		return err
+	}
+	valid, err := pubKey.Verify(sigSer, regMsg.Signature)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return writeStatusMessage(w, pb.Message_SIGNATURE_INVALID)
+	}
+
+	ser, err := proto.Marshal(regMsg)
 	if err != nil {
 		return err
 	}
 
-	err = svr.ds.Put(registrationKey(peer), tsBytes)
+	err = svr.ds.Put(registrationKey(from), ser)
 	if err != nil {
 		return err
 	}
@@ -304,10 +326,45 @@ func (svr *Server) handleUnregister(w ggio.Writer, pmes *pb.Message, peer peer.I
 	return writeStatusMessage(w, pb.Message_SUCCESS)
 }
 
+// handleProveRegistrationMessage returns the peer's registration info if it exists.
+func (svr *Server) handleProveRegistrationMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	ids := pmes.GetIds()
+	if ids == nil {
+		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
+	}
+	record, err := svr.ds.Get(registrationKey(peer.ID(ids.PeerID)))
+	if err != nil && err == datastore.ErrNotFound {
+		return writeStatusMessage(w, pb.Message_NOT_REGISTERED)
+	}
+
+	reg := new(pb.Message_Registration)
+	err = proto.Unmarshal(record, reg)
+	if err != nil {
+		return err
+	}
+	expiry, err := ptypes.Timestamp(reg.Expiry)
+	if err != nil {
+		return err
+	}
+	if expiry.Before(time.Now()) {
+		err := svr.ds.Delete(registrationKey(peer.ID(ids.PeerID)))
+		if err != nil {
+			return err
+		}
+		return writeStatusMessage(w, pb.Message_NOT_REGISTERED)
+	}
+	return writeMsgWithTimeout(w, &pb.Message{
+		Type: pb.Message_RESPONSE,
+		Payload: &pb.Message_Registration_{
+			Registration: reg,
+		},
+	})
+}
+
 // handleReplicateMessage checks the db for the message and if it doesn't exist it requests it.
 // This method may only be used by a replication peer.
 func (svr *Server) handleReplicateMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
-	ids := pmes.GetMessageID()
+	ids := pmes.GetIds()
 	if ids == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
 	}
@@ -319,8 +376,8 @@ func (svr *Server) handleReplicateMessage(w ggio.Writer, pmes *pb.Message, from 
 	if !has {
 		return writeMsgWithTimeout(w, &pb.Message{
 			Type: pb.Message_GET_MESSAGE,
-			Payload: &pb.Message_MessageID_{
-				MessageID: &pb.Message_MessageID{
+			Payload: &pb.Message_Ids{
+				Ids: &pb.Message_IDs{
 					MessageID: ids.MessageID,
 					PeerID:    ids.PeerID,
 				},
@@ -343,7 +400,7 @@ func (svr *Server) handleMessageMessage(w ggio.Writer, pmes *pb.Message, from pe
 // handleGetMessage loads a specific message from the db and returns it. This method
 // may only be used by a replication peer.
 func (svr *Server) handleGetMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
-	ids := pmes.GetMessageID()
+	ids := pmes.GetIds()
 	if ids == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
 	}
@@ -372,8 +429,12 @@ func (svr *Server) handleGetMessages(w ggio.Writer, pmes *pb.Message, peer peer.
 		return writeStatusMessage(w, pb.Message_NOT_REGISTERED)
 	}
 
-	var expiry time.Time
-	err = expiry.UnmarshalBinary(record)
+	reg := new(pb.Message_Registration)
+	err = proto.Unmarshal(record, reg)
+	if err != nil {
+		return err
+	}
+	expiry, err := ptypes.Timestamp(reg.Expiry)
 	if err != nil {
 		return err
 	}
@@ -438,8 +499,12 @@ func (svr *Server) handleAckMessage(w ggio.Writer, pmes *pb.Message, peer peer.I
 		return writeStatusMessage(w, pb.Message_NOT_REGISTERED)
 	}
 
-	var expiry time.Time
-	err = expiry.UnmarshalBinary(record)
+	reg := new(pb.Message_Registration)
+	err = proto.Unmarshal(record, reg)
+	if err != nil {
+		return err
+	}
+	expiry, err := ptypes.Timestamp(reg.Expiry)
 	if err != nil {
 		return err
 	}
@@ -483,8 +548,12 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 		return writeStatusMessage(w, pb.Message_NOT_REGISTERED)
 	}
 
-	var expiry time.Time
-	err = expiry.UnmarshalBinary(record)
+	reg := new(pb.Message_Registration)
+	err = proto.Unmarshal(record, reg)
+	if err != nil {
+		return err
+	}
+	expiry, err := ptypes.Timestamp(reg.Expiry)
 	if err != nil {
 		return err
 	}
@@ -550,8 +619,8 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 			writer := ggio.NewDelimitedWriter(s)
 			err = writeMsgWithTimeout(writer, &pb.Message{
 				Type: pb.Message_REPLICATE,
-				Payload: &pb.Message_MessageID_{
-					MessageID: &pb.Message_MessageID{
+				Payload: &pb.Message_Ids{
+					Ids: &pb.Message_IDs{
 						MessageID: id[:],
 						PeerID:    []byte(to),
 					},

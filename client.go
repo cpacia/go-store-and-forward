@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	ggio "github.com/gogo/protobuf/io"
+	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
 	ctxio "github.com/jbenet/go-context/io"
 	crypto "github.com/libp2p/go-libp2p-crypto"
@@ -37,14 +38,15 @@ type Subscription struct {
 // and forward protocol. It authenticates and registers with
 // the store and forward servers.
 type Client struct {
-	servers         map[peer.ID]bool
-	subs            map[int32]*Subscription
-	recentlyRelayed map[string]bool
-	host            host.Host
-	ctx             context.Context
-	mtx             sync.RWMutex
-	sk              crypto.PrivKey
-	protocol        protocol.ID
+	servers             map[peer.ID]bool
+	cachedRegistrations map[peer.ID]pb.Message_Registration
+	subs                map[int32]*Subscription
+	recentlyRelayed     map[string]bool
+	host                host.Host
+	ctx                 context.Context
+	mtx                 sync.RWMutex
+	sk                  crypto.PrivKey
+	protocol            protocol.ID
 }
 
 // NewClient returns a new Client and connects, authenticates, and registers with the servers.
@@ -60,14 +62,15 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 	}
 
 	c := &Client{
-		servers:         serverMap,
-		subs:            make(map[int32]*Subscription),
-		recentlyRelayed: make(map[string]bool),
-		host:            h,
-		ctx:             ctx,
-		sk:              sk,
-		mtx:             sync.RWMutex{},
-		protocol:        cfg.Protocols[0],
+		servers:             serverMap,
+		subs:                make(map[int32]*Subscription),
+		cachedRegistrations: make(map[peer.ID]pb.Message_Registration),
+		recentlyRelayed:     make(map[string]bool),
+		host:                h,
+		ctx:                 ctx,
+		sk:                  sk,
+		mtx:                 sync.RWMutex{},
+		protocol:            cfg.Protocols[0],
 	}
 
 	if !h.ID().MatchesPrivateKey(sk) {
@@ -196,7 +199,7 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error)
 }
 
 // SendMessage stores the message with the provided server.
-func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, encryptedMessage []byte) error {
+func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, pubkey crypto.PubKey, encryptedMessage []byte) error {
 	s, err := cli.host.NewStream(ctx, server, cli.protocol)
 	if err != nil {
 		return err
@@ -206,6 +209,72 @@ func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, encrypte
 	w := ggio.NewDelimitedWriter(s)
 	contextReader := ctxio.NewReader(ctx, s)
 	r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
+
+	cli.mtx.RLock()
+	cache, ok := cli.cachedRegistrations[to]
+	cli.mtx.RUnlock()
+
+	expiry, _ := ptypes.Timestamp(cache.Expiry)
+	if !ok || expiry.Before(time.Now()) {
+		err = writeMsgWithTimeout(w, &pb.Message{
+			Type: pb.Message_PROVE_REGISTRATION,
+			Payload: &pb.Message_Ids{
+				Ids: &pb.Message_IDs{
+					PeerID: []byte(to),
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		resp := new(pb.Message)
+		if err = readMsgWithTimeout(r, resp); err != nil {
+			return err
+		}
+		reg := resp.GetRegistration()
+		if reg == nil {
+			return fmt.Errorf("server %s returned invalid registration", server)
+		}
+
+		expiry, err := ptypes.Timestamp(reg.Expiry)
+		if err != nil {
+			return err
+		}
+		if expiry.Before(time.Now()) {
+			return fmt.Errorf("server %s returned invalid registration", server)
+		}
+
+		if peer.ID(reg.Server) != server {
+			return fmt.Errorf("server %s returned invalid registration", server)
+		}
+
+		if pubkey == nil {
+			pubkey, err = to.ExtractPublicKey()
+			if err != nil {
+				return err
+			}
+		}
+
+		m := proto.Clone(reg)
+		regCpy := m.(*pb.Message_Registration)
+		regCpy.Signature = nil
+		sigSer, err := proto.Marshal(regCpy)
+		if err != nil {
+			return err
+		}
+		valid, err := pubkey.Verify(sigSer, reg.Signature)
+		if err != nil {
+			return err
+		}
+		if !valid {
+			return fmt.Errorf("server %s returned invalid registration", server)
+		}
+
+		cli.mtx.Lock()
+		cli.cachedRegistrations[to] = *reg
+		cli.mtx.Unlock()
+	}
+
 	err = writeMsgWithTimeout(w, &pb.Message{
 		Type: pb.Message_STORE_MESSAGE,
 		Payload: &pb.Message_EncryptedMessage_{
@@ -468,12 +537,28 @@ func (cli *Client) registerSingle(peer peer.ID, expiration time.Duration) {
 		log.Errorf("Server %s registration error. Error: %s", peer, err)
 		return
 	}
+	reg := &pb.Message_Registration{
+		Expiry: ts,
+		Server: []byte(peer),
+	}
+
+	ser, err := proto.Marshal(reg)
+	if err != nil {
+		log.Errorf("Server %s registration error. Error: %s", peer, err)
+		return
+	}
+
+	sig, err := cli.sk.Sign(ser)
+	if err != nil {
+		log.Errorf("Server %s registration error. Error: %s", peer, err)
+		return
+	}
+	reg.Signature = sig
+
 	err = writeMsgWithTimeout(w, &pb.Message{
 		Type: pb.Message_REGISTER,
 		Payload: &pb.Message_Registration_{
-			Registration: &pb.Message_Registration{
-				Expiry: ts,
-			},
+			Registration: reg,
 		},
 	})
 	if err != nil {
@@ -493,7 +578,7 @@ func (cli *Client) registerSingle(peer peer.ID, expiration time.Duration) {
 	}
 
 	if resp.Code != pb.Message_SUCCESS {
-		log.Errorf("Server %s rejected our authentication", peer)
+		log.Errorf("Server %s rejected our authentication. Code %s", peer, resp.Code)
 		return
 	}
 

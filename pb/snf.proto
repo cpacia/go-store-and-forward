@@ -25,12 +25,13 @@ message Message {
         RESPONSE           = 3;
         REGISTER           = 5;
         UNREGISTER         = 6;
-        STORE_MESSAGE      = 7;
-        GET_MESSAGE        = 8;
-        GET_MESSAGES       = 9;
-        MESSAGE            = 10;
-        MESSAGE_ACK        = 11;
-        REPLICATE          = 12;
+        PROVE_REGISTRATION = 7;
+        STORE_MESSAGE      = 8;
+        GET_MESSAGE        = 9;
+        GET_MESSAGES       = 10;
+        MESSAGE            = 11;
+        MESSAGE_ACK        = 12;
+        REPLICATE          = 13;
     }
 
     message Pubkey {
@@ -39,6 +40,9 @@ message Message {
 
     message Registration {
         google.protobuf.Timestamp expiry = 1;
+        bytes pubkey                     = 2;
+        bytes server                     = 3;
+        bytes signature                  = 4;
     }
 
     message Challenge {
@@ -60,7 +64,7 @@ message Message {
         bytes messageID = 1;
     }
 
-    message MessageID {
+    message IDs {
         bytes messageID = 1;
         bytes peerID    = 2;
     }
@@ -74,7 +78,7 @@ message Message {
         Signature signature               = 5;
         EncryptedMessage encryptedMessage = 6;
         Ack ack                           = 7;
-        MessageID messageID               = 8;
+        IDs ids                           = 8;
     }
 
     Status code = 9;   // Status code.
