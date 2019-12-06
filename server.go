@@ -58,6 +58,7 @@ func NewServer(ctx context.Context, h host.Host, opts ...Option) (*Server, error
 
 	repPeersMap := make(map[peer.ID]inet.Stream)
 	for _, p := range cfg.ReplicationPeers {
+		h.ConnManager().Protect(p, protectionTag)
 		repPeersMap[p] = nil
 	}
 
