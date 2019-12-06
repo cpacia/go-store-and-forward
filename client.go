@@ -88,7 +88,7 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 		h.SetStreamHandler(protocol, c.handleNewStream)
 	}
 
-	go c.registerWithPeers(cfg.RegistrationDuration, cfg.BootstrapDone)
+	go c.registerWithServers(cfg.RegistrationDuration, cfg.BootstrapDone)
 
 	return c, nil
 }
@@ -400,7 +400,7 @@ func (cli *Client) streamHandler(s inet.Stream) {
 	}
 }
 
-func (cli *Client) registerWithPeers(expiration time.Duration, done chan struct{}) {
+func (cli *Client) registerWithServers(expiration time.Duration, done chan struct{}) {
 	for p := range cli.servers {
 		cli.registerSingle(p, expiration)
 	}
@@ -504,25 +504,25 @@ func (cli *Client) authenticate(peer peer.ID) (inet.Stream, error) {
 	return s, nil
 }
 
-func (cli *Client) registerSingle(peer peer.ID, expiration time.Duration) {
+func (cli *Client) registerSingle(server peer.ID, expiration time.Duration) {
 	var (
 		s          inet.Stream
 		err        error
 		registered bool
 	)
 	cli.mtx.RLock()
-	registered = cli.servers[peer]
+	registered = cli.servers[server]
 	cli.mtx.RUnlock()
 
 	if !registered {
-		s, err = cli.authenticate(peer)
+		s, err = cli.authenticate(server)
 		if err != nil {
-			log.Errorf("Server %s authentication fail. Error: %s", peer, err)
+			log.Errorf("Server %s authentication fail. Error: %s", server, err)
 		}
 	} else {
-		s, err = cli.host.NewStream(cli.ctx, peer, cli.protocol)
+		s, err = cli.host.NewStream(cli.ctx, server, cli.protocol)
 		if err != nil {
-			log.Errorf("Server %s authentication fail. Error: %s", peer, err)
+			log.Errorf("Server %s authentication fail. Error: %s", server, err)
 			return
 		}
 	}
@@ -533,23 +533,23 @@ func (cli *Client) registerSingle(peer peer.ID, expiration time.Duration) {
 
 	ts, err := ptypes.TimestampProto(time.Now().Add(expiration))
 	if err != nil {
-		log.Errorf("Server %s registration error. Error: %s", peer, err)
+		log.Errorf("Server %s registration error. Error: %s", server, err)
 		return
 	}
 	reg := &pb.Message_Registration{
 		Expiry: ts,
-		Server: []byte(peer),
+		Server: []byte(server),
 	}
 
 	ser, err := proto.Marshal(reg)
 	if err != nil {
-		log.Errorf("Server %s registration error. Error: %s", peer, err)
+		log.Errorf("Server %s registration error. Error: %s", server, err)
 		return
 	}
 
 	sig, err := cli.sk.Sign(ser)
 	if err != nil {
-		log.Errorf("Server %s registration error. Error: %s", peer, err)
+		log.Errorf("Server %s registration error. Error: %s", server, err)
 		return
 	}
 	reg.Signature = sig
@@ -561,27 +561,27 @@ func (cli *Client) registerSingle(peer peer.ID, expiration time.Duration) {
 		},
 	})
 	if err != nil {
-		log.Errorf("Server %s registration error. Error: %s", peer, err)
+		log.Errorf("Server %s registration error. Error: %s", server, err)
 		return
 	}
 
 	resp := new(pb.Message)
 	if err := readMsgWithTimeout(r, resp); err != nil {
-		log.Errorf("Server %s registration error. Error: %s", peer, err)
+		log.Errorf("Server %s registration error. Error: %s", server, err)
 		return
 	}
 
 	if resp.Type != pb.Message_STATUS {
-		log.Errorf("Server %s sent us an invalid challenge response", peer)
+		log.Errorf("Server %s sent us an invalid challenge response", server)
 		return
 	}
 
 	if resp.Code != pb.Message_SUCCESS {
-		log.Errorf("Server %s rejected our authentication. Code %s", peer, resp.Code)
+		log.Errorf("Server %s rejected our authentication. Code %s", server, resp.Code)
 		return
 	}
 
 	cli.mtx.Lock()
-	cli.servers[peer] = true
+	cli.servers[server] = true
 	cli.mtx.Unlock()
 }
