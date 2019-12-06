@@ -71,12 +71,20 @@ func Test_Authentication(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := client.authenticate(mn.Peers()[0]); err != nil {
+	if _, err := client.authenticate(server.host.ID()); err != nil {
 		t.Fatal(err)
 	}
 
-	if !server.authenticatedConns[mn.Peers()[1]] {
+	if !server.authenticatedConns[client.host.ID()] {
 		t.Fatal("Authentication failed")
+	}
+
+	if err := mn.DisconnectPeers(mn.Peers()[0], mn.Peers()[1]); err != nil {
+		t.Fatal(err)
+	}
+
+	if client.servers[client.host.ID()] {
+		t.Fatal("Failed to remove authenticated peer")
 	}
 }
 
@@ -110,18 +118,18 @@ func Test_Registration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client.registerSingle(mn.Peers()[0], time.Hour)
+	client.registerSingle(server.host.ID(), time.Hour)
 
-	if !server.authenticatedConns[mn.Peers()[1]] {
+	if !server.authenticatedConns[client.host.ID()] {
 		t.Fatal("Authentication failed")
 	}
 
-	_, err = server.ds.Get(registrationKey(mn.Peers()[1]))
+	_, err = server.ds.Get(registrationKey(client.host.ID()))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !client.servers[mn.Peers()[0]] {
+	if !client.servers[server.host.ID()] {
 		t.Fatal("Registration failed")
 	}
 }

@@ -80,6 +80,7 @@ func NewServer(ctx context.Context, h host.Host, opts ...Option) (*Server, error
 		s.mtx.Lock()
 		delete(s.authenticatedConns, conn.RemotePeer())
 		s.mtx.Unlock()
+
 	}
 
 	notifier := &inet.NotifyBundle{
