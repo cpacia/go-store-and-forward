@@ -518,6 +518,7 @@ func (cli *Client) registerSingle(server peer.ID, expiration time.Duration) {
 		s, err = cli.authenticate(server)
 		if err != nil {
 			log.Errorf("Server %s authentication fail. Error: %s", server, err)
+			return
 		}
 	} else {
 		s, err = cli.host.NewStream(cli.ctx, server, cli.protocol)
