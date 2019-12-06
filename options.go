@@ -22,6 +22,7 @@ type Options struct {
 	Protocols            []protocol.ID
 	ReplicationPeers     []peer.ID
 	RegistrationDuration time.Duration
+	BootstrapDone        chan struct{}
 }
 
 // Apply applies the given options to this Option
@@ -72,6 +73,16 @@ func Protocols(protocols ...protocol.ID) Option {
 func ReplicationPeers(peers ...peer.ID) Option {
 	return func(o *Options) error {
 		o.ReplicationPeers = peers
+		return nil
+	}
+}
+
+// BootstrapDone is closed when the initial bootstrap completes.
+//
+// Defaults to nil
+func BootstrapDone(done chan struct{}) Option {
+	return func(o *Options) error {
+		o.BootstrapDone = done
 		return nil
 	}
 }

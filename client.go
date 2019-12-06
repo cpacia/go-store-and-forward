@@ -85,7 +85,7 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 		h.SetStreamHandler(protocol, c.handleNewStream)
 	}
 
-	c.registerWithPeers(cfg.RegistrationDuration)
+	go c.registerWithPeers(cfg.RegistrationDuration, cfg.BootstrapDone)
 
 	return c, nil
 }
@@ -332,9 +332,12 @@ func (cli *Client) streamHandler(s inet.Stream) {
 	}
 }
 
-func (cli *Client) registerWithPeers(expiration time.Duration) {
+func (cli *Client) registerWithPeers(expiration time.Duration, done chan struct{}) {
 	for p := range cli.servers {
 		cli.registerSingle(p, expiration)
+	}
+	if done != nil {
+		close(done)
 	}
 
 	go func() {

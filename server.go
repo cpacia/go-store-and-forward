@@ -101,6 +101,14 @@ func (svr *Server) streamHandler(s inet.Stream) {
 	writer := ggio.NewDelimitedWriter(s)
 	remotePeer := s.Conn().RemotePeer()
 
+	defer func() {
+		svr.mtx.Lock()
+		if _, ok := svr.replicationPeers[remotePeer]; ok {
+			svr.replicationPeers[remotePeer] = nil
+		}
+		svr.mtx.Unlock()
+	}()
+
 	for {
 		select {
 		case <-svr.ctx.Done():
