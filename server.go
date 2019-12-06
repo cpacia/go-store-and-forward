@@ -31,7 +31,7 @@ const (
 	messageKeyPrefix      = "/snf/message/"
 )
 
-var log = logging.Logger("relay")
+var log = logging.Logger("snf")
 
 // Server is a store and forward server which can be used for asynchronous
 // communication between peers on the network.
