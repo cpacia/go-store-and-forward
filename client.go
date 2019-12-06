@@ -39,7 +39,7 @@ type Subscription struct {
 // the store and forward servers.
 type Client struct {
 	servers             map[peer.ID]bool
-	cachedRegistrations map[peer.ID]pb.Message_Registration
+	cachedRegistrations map[peer.ID]time.Time
 	subs                map[int32]*Subscription
 	recentlyRelayed     map[string]bool
 	host                host.Host
@@ -64,7 +64,7 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 	c := &Client{
 		servers:             serverMap,
 		subs:                make(map[int32]*Subscription),
-		cachedRegistrations: make(map[peer.ID]pb.Message_Registration),
+		cachedRegistrations: make(map[peer.ID]time.Time),
 		recentlyRelayed:     make(map[string]bool),
 		host:                h,
 		ctx:                 ctx,
@@ -211,10 +211,9 @@ func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, pubkey c
 	r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
 
 	cli.mtx.RLock()
-	cache, ok := cli.cachedRegistrations[to]
+	expiry, ok := cli.cachedRegistrations[to]
 	cli.mtx.RUnlock()
 
-	expiry, _ := ptypes.Timestamp(cache.Expiry)
 	if !ok || expiry.Before(time.Now()) {
 		err = writeMsgWithTimeout(w, &pb.Message{
 			Type: pb.Message_PROVE_REGISTRATION,
@@ -271,7 +270,7 @@ func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, pubkey c
 		}
 
 		cli.mtx.Lock()
-		cli.cachedRegistrations[to] = *reg
+		cli.cachedRegistrations[to] = expiry
 		cli.mtx.Unlock()
 	}
 
