@@ -85,7 +85,7 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 		h.SetStreamHandler(protocol, c.handleNewStream)
 	}
 
-	go c.registerWithPeers(cfg.RegistrationDuration)
+	c.registerWithPeers(cfg.RegistrationDuration)
 
 	return c, nil
 }
@@ -334,30 +334,32 @@ func (cli *Client) streamHandler(s inet.Stream) {
 
 func (cli *Client) registerWithPeers(expiration time.Duration) {
 	for p := range cli.servers {
-		go cli.registerSingle(p, expiration)
+		cli.registerSingle(p, expiration)
 	}
 
-	newRegistrationTicker := time.NewTicker(expiration - time.Minute*10)
-	boostrapTicker := time.NewTicker(time.Minute)
+	go func() {
+		newRegistrationTicker := time.NewTicker(expiration - time.Minute*10)
+		boostrapTicker := time.NewTicker(time.Minute)
 
-	for {
-		select {
-		case <-newRegistrationTicker.C:
-			for p := range cli.servers {
-				go cli.registerSingle(p, expiration)
-			}
-		case <-boostrapTicker.C:
-			cli.mtx.RLock()
-			for p, registered := range cli.servers {
-				if !registered {
+		for {
+			select {
+			case <-newRegistrationTicker.C:
+				for p := range cli.servers {
 					go cli.registerSingle(p, expiration)
 				}
+			case <-boostrapTicker.C:
+				cli.mtx.RLock()
+				for p, registered := range cli.servers {
+					if !registered {
+						go cli.registerSingle(p, expiration)
+					}
+				}
+				cli.mtx.RUnlock()
+			case <-cli.ctx.Done():
+				return
 			}
-			cli.mtx.RUnlock()
-		case <-cli.ctx.Done():
-			return
 		}
-	}
+	}()
 }
 
 func (cli *Client) authenticate(peer peer.ID) (inet.Stream, error) {
