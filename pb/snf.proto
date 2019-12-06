@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package pb;
+
+import "google/protobuf/timestamp.proto";
+
+message Message {
+
+    enum Status {
+        NA                         = 0;
+        SUCCESS                    = 100;
+        ALREADY_AUTHENTICATED      = 210;
+        PUBKEY_INVALID             = 250;
+        SIGNATURE_INVALID          = 251;
+        PEERID_INVALID             = 252;
+        NOT_REGISTERED             = 305;
+        MALFORMED_MESSAGE          = 400;
+        UNAUTHORIZED               = 401;
+    }
+
+    enum Type {
+        STATUS             = 0;
+        AUTHENTICATE       = 1;
+        CHALLENGE          = 2;
+        RESPONSE           = 3;
+        REGISTER           = 5;
+        UNREGISTER         = 6;
+        STORE_MESSAGE      = 7;
+        GET_MESSAGES       = 8;
+        MESSAGE            = 9;
+        MESSAGE_ACK        = 10;
+    }
+
+    message Pubkey {
+        bytes pubkey = 1;
+    }
+
+    message Registration {
+        google.protobuf.Timestamp expiry = 1;
+    }
+
+    message Challenge {
+        bytes challenge = 1;
+    }
+
+    message Signature {
+        bytes signature = 1;
+    }
+
+    message EncryptedMessage {
+        bytes toPeerID  = 1;
+        bytes messageID = 2;
+        bytes message   = 3;
+        bool more       = 4;
+    }
+
+    message Ack {
+        bytes messageID = 1;
+    }
+
+    Type type = 1;     // Type of the message
+
+    oneof payload {
+        Pubkey pubkey                     = 2;
+        Registration registration         = 3;
+        Challenge challenge               = 4;
+        Signature signature               = 5;
+        EncryptedMessage encryptedMessage = 6;
+        Ack ack                           = 7;
+    }
+
+    Status code = 8;   // Status code.
+}
