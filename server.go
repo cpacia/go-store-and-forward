@@ -39,6 +39,7 @@ type Server struct {
 	host               host.Host
 	ctx                context.Context
 	ds                 datastore.Datastore
+	replicationPeers   map[peer.ID]inet.Stream
 	authenticatedConns map[peer.ID]bool
 	protocol           protocol.ID
 	mtx                sync.RWMutex
@@ -55,12 +56,18 @@ func NewServer(ctx context.Context, h host.Host, opts ...Option) (*Server, error
 		return nil, errors.New("protocol option is required")
 	}
 
+	repPeersMap := make(map[peer.ID]inet.Stream)
+	for _, p := range cfg.ReplicationPeers {
+		repPeersMap[p] = nil
+	}
+
 	s := &Server{
 		host:               h,
 		ctx:                ctx,
 		authenticatedConns: make(map[peer.ID]bool),
 		ds:                 cfg.Datastore,
 		protocol:           cfg.Protocols[0],
+		replicationPeers:   repPeersMap,
 		mtx:                sync.RWMutex{},
 	}
 
@@ -117,25 +124,47 @@ func (svr *Server) streamHandler(s inet.Stream) {
 		case pb.Message_REGISTER:
 			if !svr.isAuthenticated(remotePeer) {
 				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
+				break
 			}
 			err = svr.handleRegister(writer, pmes, remotePeer)
 		case pb.Message_UNREGISTER:
 			if !svr.isAuthenticated(remotePeer) {
 				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
+				break
 			}
 			err = svr.handleUnregister(writer, pmes, remotePeer)
 		case pb.Message_GET_MESSAGES:
 			if !svr.isAuthenticated(remotePeer) {
 				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
+				break
 			}
 			err = svr.handleGetMessages(writer, pmes, remotePeer)
 		case pb.Message_MESSAGE_ACK:
 			if !svr.isAuthenticated(remotePeer) {
 				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
+				break
 			}
 			err = svr.handleAckMessage(writer, pmes, remotePeer)
 		case pb.Message_STORE_MESSAGE:
 			err = svr.handleStoreMessage(writer, pmes, remotePeer)
+		case pb.Message_GET_MESSAGE:
+			if _, ok := svr.replicationPeers[remotePeer]; !ok {
+				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
+				break
+			}
+			err = svr.handleGetMessage(writer, pmes, remotePeer)
+		case pb.Message_REPLICATE:
+			if _, ok := svr.replicationPeers[remotePeer]; !ok {
+				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
+				break
+			}
+			err = svr.handleReplicateMessage(writer, pmes, remotePeer)
+		case pb.Message_MESSAGE:
+			if _, ok := svr.replicationPeers[remotePeer]; !ok {
+				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
+				break
+			}
+			err = svr.handleMessageMessage(writer, pmes, remotePeer)
 		}
 		if err != nil {
 			log.Errorf("Peer %s: Error handling %s message: %s", remotePeer, pmes.Type, err)
@@ -267,6 +296,66 @@ func (svr *Server) handleUnregister(w ggio.Writer, pmes *pb.Message, peer peer.I
 	return writeStatusMessage(w, pb.Message_SUCCESS)
 }
 
+// handleReplicateMessage checks the db for the message and if it doesn't exist it requests it.
+// This method may only be used by a replication peer.
+func (svr *Server) handleReplicateMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	ids := pmes.GetMessageID()
+	if ids == nil {
+		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
+	}
+
+	has, err := svr.ds.Has(messageKey(peer.ID(ids.PeerID), ids.MessageID))
+	if err != nil {
+		return err
+	}
+	if !has {
+		return writeMsgWithTimeout(w, &pb.Message{
+			Type: pb.Message_GET_MESSAGE,
+			Payload: &pb.Message_MessageID_{
+				MessageID: &pb.Message_MessageID{
+					MessageID: ids.MessageID,
+					PeerID:    ids.PeerID,
+				},
+			},
+		})
+	}
+	return nil
+}
+
+// handleMessageMessage saves the message straight into the db.
+// This method may only be used by a replication peer.
+func (svr *Server) handleMessageMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	enc := pmes.GetEncryptedMessage()
+	if enc == nil {
+		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
+	}
+	return svr.ds.Put(messageKey(peer.ID(enc.PeerID), enc.MessageID), enc.Message)
+}
+
+// handleGetMessage loads a specific message from the db and returns it. This method
+// may only be used by a replication peer.
+func (svr *Server) handleGetMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	ids := pmes.GetMessageID()
+	if ids == nil {
+		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
+	}
+
+	message, err := svr.ds.Get(messageKey(peer.ID(ids.PeerID), ids.MessageID))
+	if err != nil {
+		return err
+	}
+	return writeMsgWithTimeout(w, &pb.Message{
+		Type: pb.Message_MESSAGE,
+		Payload: &pb.Message_EncryptedMessage_{
+			EncryptedMessage: &pb.Message_EncryptedMessage{
+				MessageID: ids.MessageID,
+				Message:   message,
+				PeerID:    ids.PeerID,
+			},
+		},
+	})
+}
+
 // handleGetMessages loads all the messages for the given peer from the database and sends
 // them in separate MESSAGE messages.
 func (svr *Server) handleGetMessages(w ggio.Writer, pmes *pb.Message, peer peer.ID) error {
@@ -330,7 +419,6 @@ func (svr *Server) handleGetMessages(w ggio.Writer, pmes *pb.Message, peer peer.
 			return err
 		}
 	}
-	return nil
 }
 
 // handleAckMessage deletes the message with the provided ID from the database. The client
@@ -376,11 +464,11 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 	if encMsg == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
 	}
-	if encMsg.GetToPeerID() == nil {
+	if encMsg.GetPeerID() == nil {
 		return writeStatusMessage(w, pb.Message_PEERID_INVALID)
 	}
 
-	to := peer.ID(encMsg.GetToPeerID())
+	to := peer.ID(encMsg.GetPeerID())
 
 	record, err := svr.ds.Get(registrationKey(to))
 	if err != nil && err == datastore.ErrNotFound {
@@ -407,7 +495,6 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 	id := sha256.Sum256(append(fromBytes, encMsg.Message...))
 
 	if err := svr.ds.Put(messageKey(to, id[:]), encMsg.Message); err != nil {
-
 		return err
 	}
 
@@ -436,6 +523,38 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 			}
 		}
 	}()
+
+	svr.mtx.RLock()
+	for p, s := range svr.replicationPeers {
+		go func(p peer.ID, s inet.Stream) {
+			if s == nil {
+				s, err = svr.host.NewStream(svr.ctx, p, svr.protocol)
+				if err != nil {
+					log.Errorf("Error replicating message to peer %s: %s", p, err)
+					return
+				}
+				svr.mtx.Lock()
+				svr.replicationPeers[p] = s
+				svr.mtx.Unlock()
+				svr.handleNewStream(s)
+			}
+
+			writer := ggio.NewDelimitedWriter(s)
+			err = writeMsgWithTimeout(writer, &pb.Message{
+				Type: pb.Message_REPLICATE,
+				Payload: &pb.Message_MessageID_{
+					MessageID: &pb.Message_MessageID{
+						MessageID: id[:],
+						PeerID:    []byte(to),
+					},
+				},
+			})
+			if err != nil {
+				log.Errorf("Error writing REPLICATE message to peer %s: %s", p, err)
+			}
+		}(p, s)
+	}
+	svr.mtx.RUnlock()
 	return writeStatusMessage(w, pb.Message_SUCCESS)
 }
 

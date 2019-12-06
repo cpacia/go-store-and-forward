@@ -4,6 +4,7 @@ import (
 	"fmt"
 	ds "github.com/ipfs/go-datastore"
 	dssync "github.com/ipfs/go-datastore/sync"
+	peer "github.com/libp2p/go-libp2p-peer"
 	protocol "github.com/libp2p/go-libp2p-protocol"
 	"time"
 )
@@ -19,6 +20,7 @@ var (
 type Options struct {
 	Datastore            ds.Batching
 	Protocols            []protocol.ID
+	ReplicationPeers     []peer.ID
 	RegistrationDuration time.Duration
 }
 
@@ -60,6 +62,16 @@ func Datastore(ds ds.Batching) Option {
 func Protocols(protocols ...protocol.ID) Option {
 	return func(o *Options) error {
 		o.Protocols = protocols
+		return nil
+	}
+}
+
+// ReplicationPeers registers server peers to replicate data to.
+//
+// Defaults to nil
+func ReplicationPeers(peers ...peer.ID) Option {
+	return func(o *Options) error {
+		o.ReplicationPeers = peers
 		return nil
 	}
 }

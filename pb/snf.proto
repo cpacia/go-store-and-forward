@@ -26,9 +26,11 @@ message Message {
         REGISTER           = 5;
         UNREGISTER         = 6;
         STORE_MESSAGE      = 7;
-        GET_MESSAGES       = 8;
-        MESSAGE            = 9;
-        MESSAGE_ACK        = 10;
+        GET_MESSAGE        = 8;
+        GET_MESSAGES       = 9;
+        MESSAGE            = 10;
+        MESSAGE_ACK        = 11;
+        REPLICATE          = 12;
     }
 
     message Pubkey {
@@ -48,7 +50,7 @@ message Message {
     }
 
     message EncryptedMessage {
-        bytes toPeerID  = 1;
+        bytes peerID  = 1;
         bytes messageID = 2;
         bytes message   = 3;
         bool more       = 4;
@@ -56,6 +58,11 @@ message Message {
 
     message Ack {
         bytes messageID = 1;
+    }
+
+    message MessageID {
+        bytes messageID = 1;
+        bytes peerID    = 2;
     }
 
     Type type = 1;     // Type of the message
@@ -67,7 +74,8 @@ message Message {
         Signature signature               = 5;
         EncryptedMessage encryptedMessage = 6;
         Ack ack                           = 7;
+        MessageID messageID               = 8;
     }
 
-    Status code = 8;   // Status code.
+    Status code = 9;   // Status code.
 }

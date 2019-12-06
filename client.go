@@ -20,18 +20,24 @@ import (
 	"time"
 )
 
+// Message represents an encrypted message.
 type Message struct {
 	MessageID        []byte
 	EncryptedMessage []byte
 }
 
+// Subscription is a subscription chan for listening for
+// relayed messages.
 type Subscription struct {
 	Out   chan Message
 	Close func()
 }
 
+// Client implements the functionality needed to use the store
+// and forward protocol. It authenticates and registers with
+// the store and forward servers.
 type Client struct {
-	peers           map[peer.ID]bool
+	servers         map[peer.ID]bool
 	subs            map[int32]*Subscription
 	recentlyRelayed map[string]bool
 	host            host.Host
@@ -41,19 +47,20 @@ type Client struct {
 	protocol        protocol.ID
 }
 
-func NewClient(ctx context.Context, sk crypto.PrivKey, peers []peer.ID, h host.Host, opts ...Option) (*Client, error) {
+// NewClient returns a new Client and connects, authenticates, and registers with the servers.
+func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host.Host, opts ...Option) (*Client, error) {
 	var cfg Options
 	if err := cfg.Apply(append([]Option{Defaults}, opts...)...); err != nil {
 		return nil, err
 	}
 
-	peerMap := make(map[peer.ID]bool)
-	for _, peer := range peers {
-		peerMap[peer] = false
+	serverMap := make(map[peer.ID]bool)
+	for _, peer := range servers {
+		serverMap[peer] = false
 	}
 
 	c := &Client{
-		peers:           peerMap,
+		servers:         serverMap,
 		subs:            make(map[int32]*Subscription),
 		recentlyRelayed: make(map[string]bool),
 		host:            h,
@@ -83,107 +90,8 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, peers []peer.ID, h host.H
 	return c, nil
 }
 
-func (cli *Client) handleNewStream(s inet.Stream) {
-	go cli.streamHandler(s)
-}
-
-func (cli *Client) streamHandler(s inet.Stream) {
-	defer s.Close()
-	contextReader := ctxio.NewReader(cli.ctx, s)
-	reader := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
-	remotePeer := s.Conn().RemotePeer()
-
-	for {
-		select {
-		case <-cli.ctx.Done():
-			return
-		default:
-		}
-
-		pmes := new(pb.Message)
-		if err := reader.ReadMsg(pmes); err != nil {
-			s.Reset()
-			if err == io.EOF {
-				log.Debugf("server %s closed stream", remotePeer)
-			}
-			return
-		}
-
-		if pmes.Type != pb.Message_MESSAGE || pmes.GetEncryptedMessage() == nil {
-			log.Errorf("Server %s sending malformed MESSAGE", remotePeer)
-			continue
-		}
-		enc := pmes.GetEncryptedMessage()
-		messageIDStr := hex.EncodeToString(enc.MessageID)
-
-		cli.mtx.Lock()
-		_, ok := cli.recentlyRelayed[messageIDStr]
-		if !ok {
-			cli.recentlyRelayed[messageIDStr] = true
-			time.AfterFunc(time.Minute*5, func() {
-				cli.mtx.Lock()
-				delete(cli.recentlyRelayed, messageIDStr)
-				cli.mtx.Unlock()
-			})
-
-			for _, sub := range cli.subs {
-				sub.Out <- Message{
-					MessageID:        enc.MessageID,
-					EncryptedMessage: enc.Message,
-				}
-			}
-		}
-		cli.mtx.Unlock()
-	}
-}
-
-func (cli *Client) AckMessage(ctx context.Context, messageID []byte) error {
-	var wg sync.WaitGroup
-	for p, registered := range cli.peers {
-		if registered {
-			wg.Add(1)
-			go func(p peer.ID) {
-				defer wg.Done()
-
-				s, err := cli.host.NewStream(ctx, p, cli.protocol)
-				if err != nil {
-					log.Errorf("Error opening stream with server %s", p)
-					return
-				}
-				defer s.Close()
-
-				contextReader := ctxio.NewReader(cli.ctx, s)
-				r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
-				w := ggio.NewDelimitedWriter(s)
-
-				err = writeMsgWithTimeout(w, &pb.Message{
-					Type: pb.Message_MESSAGE_ACK,
-					Payload: &pb.Message_Ack_{
-						Ack: &pb.Message_Ack{
-							MessageID: messageID,
-						},
-					},
-				})
-				if err != nil {
-					log.Errorf("Error sending MESSAGE_ACK to server %s", p)
-					return
-				}
-
-				resp := new(pb.Message)
-				if err = readMsgWithTimeout(r, resp); err != nil {
-					log.Errorf("Error reading MESSAGE_ACK response from server %s", p)
-					return
-				}
-				if resp.Code != pb.Message_SUCCESS {
-					log.Errorf("message ack to server %s failed with code: %s", p, resp.Code)
-				}
-			}(p)
-		}
-	}
-	wg.Wait()
-	return nil
-}
-
+// SubscribeMessages returns a subscription which fires whenever the client
+// receives a relayed message.
 func (cli *Client) SubscribeMessages() *Subscription {
 	cli.mtx.Lock()
 	defer cli.mtx.Unlock()
@@ -202,6 +110,7 @@ func (cli *Client) SubscribeMessages() *Subscription {
 	return sub
 }
 
+// GetMessages queries the servers for messages and returns them.
 func (cli *Client) GetMessages(ctx context.Context) ([]Message, error) {
 	resp, err := cli.GetMessagesAsync(ctx)
 	if err != nil {
@@ -214,6 +123,7 @@ func (cli *Client) GetMessages(ctx context.Context) ([]Message, error) {
 	return messages, nil
 }
 
+// GetMessagesAsync behaves like GetMessages but returns the responses over a channel.
 func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error) {
 	var (
 		downloaded = make(map[string]bool)
@@ -221,7 +131,7 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error)
 		resp       = make(chan Message)
 		wg         sync.WaitGroup
 	)
-	for p, registered := range cli.peers {
+	for p, registered := range cli.servers {
 		if registered {
 			wg.Add(1)
 			go func(p peer.ID) {
@@ -285,6 +195,7 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error)
 	return resp, nil
 }
 
+// SendMessage stores the message with the provided server.
 func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, encryptedMessage []byte) error {
 	s, err := cli.host.NewStream(ctx, server, cli.protocol)
 	if err != nil {
@@ -299,8 +210,8 @@ func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, encrypte
 		Type: pb.Message_STORE_MESSAGE,
 		Payload: &pb.Message_EncryptedMessage_{
 			EncryptedMessage: &pb.Message_EncryptedMessage{
-				Message:  encryptedMessage,
-				ToPeerID: []byte(to),
+				Message: encryptedMessage,
+				PeerID:  []byte(to),
 			},
 		},
 	})
@@ -317,8 +228,112 @@ func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, encrypte
 	return nil
 }
 
+// AckMessage sends the ack message to the servers. Upon receipt of the message
+// the servers will delete the message so the client must make sure it has it
+// fully committed first.
+func (cli *Client) AckMessage(ctx context.Context, messageID []byte) error {
+	var wg sync.WaitGroup
+	for p, registered := range cli.servers {
+		if registered {
+			wg.Add(1)
+			go func(p peer.ID) {
+				defer wg.Done()
+
+				s, err := cli.host.NewStream(ctx, p, cli.protocol)
+				if err != nil {
+					log.Errorf("Error opening stream with server %s", p)
+					return
+				}
+				defer s.Close()
+
+				contextReader := ctxio.NewReader(cli.ctx, s)
+				r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
+				w := ggio.NewDelimitedWriter(s)
+
+				err = writeMsgWithTimeout(w, &pb.Message{
+					Type: pb.Message_MESSAGE_ACK,
+					Payload: &pb.Message_Ack_{
+						Ack: &pb.Message_Ack{
+							MessageID: messageID,
+						},
+					},
+				})
+				if err != nil {
+					log.Errorf("Error sending MESSAGE_ACK to server %s", p)
+					return
+				}
+
+				resp := new(pb.Message)
+				if err = readMsgWithTimeout(r, resp); err != nil {
+					log.Errorf("Error reading MESSAGE_ACK response from server %s", p)
+					return
+				}
+				if resp.Code != pb.Message_SUCCESS {
+					log.Errorf("message ack to server %s failed with code: %s", p, resp.Code)
+				}
+			}(p)
+		}
+	}
+	wg.Wait()
+	return nil
+}
+
+func (cli *Client) handleNewStream(s inet.Stream) {
+	go cli.streamHandler(s)
+}
+
+func (cli *Client) streamHandler(s inet.Stream) {
+	defer s.Close()
+	contextReader := ctxio.NewReader(cli.ctx, s)
+	reader := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
+	remotePeer := s.Conn().RemotePeer()
+
+	for {
+		select {
+		case <-cli.ctx.Done():
+			return
+		default:
+		}
+
+		pmes := new(pb.Message)
+		if err := reader.ReadMsg(pmes); err != nil {
+			s.Reset()
+			if err == io.EOF {
+				log.Debugf("server %s closed stream", remotePeer)
+			}
+			return
+		}
+
+		if pmes.Type != pb.Message_MESSAGE || pmes.GetEncryptedMessage() == nil {
+			log.Errorf("Server %s sending malformed MESSAGE", remotePeer)
+			continue
+		}
+		enc := pmes.GetEncryptedMessage()
+		messageIDStr := hex.EncodeToString(enc.MessageID)
+
+		cli.mtx.Lock()
+		_, ok := cli.recentlyRelayed[messageIDStr]
+		if !ok {
+			cli.recentlyRelayed[messageIDStr] = true
+			time.AfterFunc(time.Minute*5, func() {
+				cli.mtx.Lock()
+				delete(cli.recentlyRelayed, messageIDStr)
+				cli.mtx.Unlock()
+			})
+
+			for _, sub := range cli.subs {
+				sub.Out <- Message{
+					MessageID:        enc.MessageID,
+					EncryptedMessage: enc.Message,
+				}
+			}
+		}
+		cli.mtx.Unlock()
+	}
+}
+
 func (cli *Client) registerWithPeers(expiration time.Duration) {
-	for p := range cli.peers {
+	for p := range cli.servers {
 		go cli.registerSingle(p, expiration)
 	}
 
@@ -328,13 +343,13 @@ func (cli *Client) registerWithPeers(expiration time.Duration) {
 	for {
 		select {
 		case <-newRegistrationTicker.C:
-			for p := range cli.peers {
+			for p := range cli.servers {
 				go cli.registerSingle(p, expiration)
 			}
 		case <-boostrapTicker.C:
 			cli.mtx.RLock()
-			for p := range cli.peers {
-				if !cli.peers[p] {
+			for p, registered := range cli.servers {
+				if !registered {
 					go cli.registerSingle(p, expiration)
 				}
 			}
@@ -423,7 +438,7 @@ func (cli *Client) registerSingle(peer peer.ID, expiration time.Duration) {
 		registered bool
 	)
 	cli.mtx.RLock()
-	registered = cli.peers[peer]
+	registered = cli.servers[peer]
 	cli.mtx.RUnlock()
 
 	if !registered {
@@ -478,6 +493,6 @@ func (cli *Client) registerSingle(peer peer.ID, expiration time.Duration) {
 	}
 
 	cli.mtx.Lock()
-	cli.peers[peer] = true
+	cli.servers[peer] = true
 	cli.mtx.Unlock()
 }

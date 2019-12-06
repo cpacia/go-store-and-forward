@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"github.com/ipfs/go-datastore"
 	crypto "github.com/libp2p/go-libp2p-crypto"
@@ -120,12 +121,12 @@ func Test_Registration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !client.peers[mn.Peers()[0]] {
+	if !client.servers[mn.Peers()[0]] {
 		t.Fatal("Registration failed")
 	}
 }
 
-func TestClient_Messages(t *testing.T) {
+func Test_Messages(t *testing.T) {
 	mn, err := mocknet.WithNPeers(context.Background(), 1)
 	if err != nil {
 		t.Fatal(err)
@@ -210,5 +211,96 @@ func TestClient_Messages(t *testing.T) {
 	_, err = server.ds.Get(messageKey(h2.ID(), messages[0].MessageID))
 	if err != datastore.ErrNotFound {
 		t.Errorf("Expected ErrNotFound got %v", err)
+	}
+}
+
+func Test_Replication(t *testing.T) {
+	mn := mocknet.New(context.Background())
+	h0, err := mn.GenPeer()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h1, err := mn.GenPeer()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewServer(context.Background(), h0, ReplicationPeers(h1.ID()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server2, err := NewServer(context.Background(), h1, ReplicationPeers(h0.ID()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sk1, a1, err := newPeer()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sk2, a2, err := newPeer()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h2, err := mn.AddPeer(sk1, a1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h3, err := mn.AddPeer(sk2, a2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mn.LinkAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	client1, err := NewClient(context.Background(), sk1, []peer.ID{}, h2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client1.registerSingle(h0.ID(), time.Hour)
+
+	client2, err := NewClient(context.Background(), sk2, []peer.ID{}, h3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client2.registerSingle(h0.ID(), time.Hour)
+
+	encMsg := []byte("encrypted message")
+
+	fromBytes, err := h2.ID().MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sha256.Sum256(append(fromBytes, encMsg...))
+
+	err = client1.SendMessage(context.Background(), h3.ID(), h0.ID(), encMsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := time.After(time.Second * 10)
+	for {
+		select {
+		case <-c:
+			t.Fatal("Timed out")
+		default:
+		}
+
+		has, err := server2.ds.Has(messageKey(h3.ID(), id[:]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if has {
+			break
+		}
 	}
 }
