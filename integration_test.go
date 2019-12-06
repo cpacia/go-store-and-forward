@@ -212,6 +212,41 @@ func Test_Messages(t *testing.T) {
 	if err != datastore.ErrNotFound {
 		t.Errorf("Expected ErrNotFound got %v", err)
 	}
+
+	// Make sure second message goes through.
+	encMsg = []byte("encrypted message2")
+	if err := client1.SendMessage(context.Background(), h2.ID(), mn.Hosts()[0].ID(), nil, encMsg); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case m := <-sub.Out:
+		if !bytes.Equal(m.EncryptedMessage, encMsg) {
+			t.Errorf("Wrong message. Expected %s, got %s", string(encMsg), string(m.EncryptedMessage))
+		}
+	case <-time.After(time.Second * 10):
+		t.Fatal("Timed out waiting on sub")
+	}
+
+	messages, err = client2.GetMessages(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("Wrong number of messages. Expected %d, got %d", 1, len(messages))
+	}
+	if !bytes.Equal(messages[0].EncryptedMessage, encMsg) {
+		t.Errorf("Wrong message. Expected %s, got %s", string(encMsg), string(messages[0].EncryptedMessage))
+	}
+
+	if err := client2.AckMessage(context.Background(), messages[0].MessageID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = server.ds.Get(messageKey(h2.ID(), messages[0].MessageID))
+	if err != datastore.ErrNotFound {
+		t.Errorf("Expected ErrNotFound got %v", err)
+	}
 }
 
 func Test_Replication(t *testing.T) {
