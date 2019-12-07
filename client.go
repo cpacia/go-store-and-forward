@@ -61,6 +61,10 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 		serverMap[peer] = false
 	}
 
+	if len(cfg.Protocols) == 0 {
+		return nil, errors.New("protocol option is required")
+	}
+
 	c := &Client{
 		servers:             serverMap,
 		subs:                make(map[int32]*Subscription),
@@ -79,9 +83,6 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 
 	if cfg.RegistrationDuration < time.Hour {
 		return nil, errors.New("expiration duration must be at least one hour")
-	}
-	if len(cfg.Protocols) == 0 {
-		return nil, errors.New("protocol option is required")
 	}
 
 	for _, protocol := range cfg.Protocols {
@@ -138,6 +139,7 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error)
 		if registered {
 			wg.Add(1)
 			go func(p peer.ID) {
+				log.Debugf("Requesting messages from server %s", p)
 				defer wg.Done()
 
 				s, err := cli.host.NewStream(ctx, p, cli.protocol)
@@ -172,6 +174,7 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error)
 					enc := pmes.GetEncryptedMessage()
 
 					if !enc.More {
+						log.Debugf("Downloaded messages from server %s", p)
 						return
 					}
 
@@ -200,6 +203,7 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error)
 
 // SendMessage stores the message with the provided server.
 func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, pubkey crypto.PubKey, encryptedMessage []byte) error {
+	log.Debugf("Sending message to server %s", server)
 	s, err := cli.host.NewStream(ctx, server, cli.protocol)
 	if err != nil {
 		return err
@@ -293,6 +297,7 @@ func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, pubkey c
 	if resp.Code != pb.Message_SUCCESS {
 		return fmt.Errorf("store failed with code: %s", resp.Code)
 	}
+	log.Debugf("Message send to server %s successful", server)
 	return nil
 }
 
@@ -305,6 +310,7 @@ func (cli *Client) AckMessage(ctx context.Context, messageID []byte) error {
 		if registered {
 			wg.Add(1)
 			go func(p peer.ID) {
+				log.Debugf("Sending ack to server %s", p)
 				defer wg.Done()
 
 				s, err := cli.host.NewStream(ctx, p, cli.protocol)
@@ -501,6 +507,7 @@ func (cli *Client) authenticate(peer peer.ID) (inet.Stream, error) {
 	if resp.Code != pb.Message_SUCCESS {
 		return nil, fmt.Errorf("server %s sent rejected our authentication. code: %s", peer, resp.Code.String())
 	}
+	log.Debugf("Authenticated with server %s", peer)
 	return s, nil
 }
 
@@ -585,4 +592,5 @@ func (cli *Client) registerSingle(server peer.ID, expiration time.Duration) {
 	cli.mtx.Lock()
 	cli.servers[server] = true
 	cli.mtx.Unlock()
+	log.Debugf("Registered with server %s", server)
 }

@@ -194,6 +194,7 @@ func (svr *Server) isAuthenticated(p peer.ID) bool {
 
 // handleAuthenticate runs the authentication protocol which contains a challenge and response.
 func (svr *Server) handleAuthenticate(s inet.Stream, r ggio.Reader, w ggio.Writer, pmes *pb.Message, peer peer.ID) error {
+	log.Debugf("handleAuthenticate: peer %s", peer)
 	// Check to make sure we are not already authenticated.
 	svr.mtx.RLock()
 	_, ok := svr.authenticatedConns[peer]
@@ -270,6 +271,7 @@ func (svr *Server) handleAuthenticate(s inet.Stream, r ggio.Reader, w ggio.Write
 // handleRegister saves a user registration in the db. Duplicate registrations are allowed
 // and a prior registration is overridden.
 func (svr *Server) handleRegister(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	log.Debugf("handleRegister: peer %s", from)
 	regMsg := pmes.GetRegistration()
 	if regMsg == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
@@ -321,6 +323,7 @@ func (svr *Server) handleRegister(w ggio.Writer, pmes *pb.Message, from peer.ID)
 
 // handleUnregister unregisters a peer from this server.
 func (svr *Server) handleUnregister(w ggio.Writer, pmes *pb.Message, peer peer.ID) error {
+	log.Debugf("handleUnregister: peer %s", peer)
 	err := svr.ds.Delete(registrationKey(peer))
 	if err != nil {
 		return err
@@ -330,6 +333,7 @@ func (svr *Server) handleUnregister(w ggio.Writer, pmes *pb.Message, peer peer.I
 
 // handleProveRegistrationMessage returns the peer's registration info if it exists.
 func (svr *Server) handleProveRegistrationMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	log.Debugf("handleProveRegistration: peer %s", from)
 	ids := pmes.GetIds()
 	if ids == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
@@ -366,6 +370,7 @@ func (svr *Server) handleProveRegistrationMessage(w ggio.Writer, pmes *pb.Messag
 // handleReplicateMessage checks the db for the message and if it doesn't exist it requests it.
 // This method may only be used by a replication peer.
 func (svr *Server) handleReplicateMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	log.Debugf("handleReplicate: peer %s", from)
 	ids := pmes.GetIds()
 	if ids == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
@@ -392,6 +397,7 @@ func (svr *Server) handleReplicateMessage(w ggio.Writer, pmes *pb.Message, from 
 // handleMessageMessage saves the message straight into the db.
 // This method may only be used by a replication peer.
 func (svr *Server) handleMessageMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	log.Debugf("handleMessage: peer %s", from)
 	enc := pmes.GetEncryptedMessage()
 	if enc == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
@@ -402,6 +408,7 @@ func (svr *Server) handleMessageMessage(w ggio.Writer, pmes *pb.Message, from pe
 // handleGetMessage loads a specific message from the db and returns it. This method
 // may only be used by a replication peer.
 func (svr *Server) handleGetMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	log.Debugf("handleGetMessage: peer %s", from)
 	ids := pmes.GetIds()
 	if ids == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
@@ -426,6 +433,7 @@ func (svr *Server) handleGetMessage(w ggio.Writer, pmes *pb.Message, from peer.I
 // handleGetMessages loads all the messages for the given peer from the database and sends
 // them in separate MESSAGE messages.
 func (svr *Server) handleGetMessages(w ggio.Writer, pmes *pb.Message, peer peer.ID) error {
+	log.Debugf("handleGetMessages: peer %s", peer)
 	record, err := svr.ds.Get(registrationKey(peer))
 	if err != nil && err == datastore.ErrNotFound {
 		return writeStatusMessage(w, pb.Message_NOT_REGISTERED)
@@ -496,6 +504,7 @@ func (svr *Server) handleGetMessages(w ggio.Writer, pmes *pb.Message, peer peer.
 // should take care to make sure it is fully committed on the client side before acking
 // the message.
 func (svr *Server) handleAckMessage(w ggio.Writer, pmes *pb.Message, peer peer.ID) error {
+	log.Debugf("handleAck: peer %s", peer)
 	record, err := svr.ds.Get(registrationKey(peer))
 	if err != nil && err == datastore.ErrNotFound {
 		return writeStatusMessage(w, pb.Message_NOT_REGISTERED)
@@ -535,6 +544,7 @@ func (svr *Server) handleAckMessage(w ggio.Writer, pmes *pb.Message, peer peer.I
 // Further, we check to see if the recipient is connected to us and if so relay
 // the message to them.
 func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	log.Debugf("handleStore: peer %s", from)
 	encMsg := pmes.GetEncryptedMessage()
 	if encMsg == nil {
 		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
