@@ -44,6 +44,8 @@ type Client struct {
 	recentlyRelayed     map[string]bool
 	host                host.Host
 	ctx                 context.Context
+	bootstrapChan       chan struct{}
+	bootstrapOnce       sync.Once
 	mtx                 sync.RWMutex
 	sk                  crypto.PrivKey
 	protocol            protocol.ID
@@ -73,6 +75,7 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 		host:                h,
 		ctx:                 ctx,
 		sk:                  sk,
+		bootstrapChan:       cfg.BootstrapDone,
 		mtx:                 sync.RWMutex{},
 		protocol:            cfg.Protocols[0],
 	}
@@ -89,7 +92,7 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 		h.SetStreamHandler(protocol, c.handleNewStream)
 	}
 
-	go c.registerWithServers(cfg.RegistrationDuration, cfg.BootstrapDone)
+	go c.registerWithServers(cfg.RegistrationDuration)
 
 	return c, nil
 }
@@ -406,12 +409,9 @@ func (cli *Client) streamHandler(s inet.Stream) {
 	}
 }
 
-func (cli *Client) registerWithServers(expiration time.Duration, done chan struct{}) {
+func (cli *Client) registerWithServers(expiration time.Duration) {
 	for p := range cli.servers {
 		cli.registerSingle(p, expiration)
-	}
-	if done != nil {
-		close(done)
 	}
 
 	go func() {
@@ -592,5 +592,12 @@ func (cli *Client) registerSingle(server peer.ID, expiration time.Duration) {
 	cli.mtx.Lock()
 	cli.servers[server] = true
 	cli.mtx.Unlock()
+
+	if cli.bootstrapChan != nil {
+		cli.bootstrapOnce.Do(func() {
+			close(cli.bootstrapChan)
+		})
+	}
+
 	log.Debugf("Registered with server %s", server)
 }
