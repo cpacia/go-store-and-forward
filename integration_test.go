@@ -319,11 +319,7 @@ func Test_Replication(t *testing.T) {
 
 	encMsg := []byte("encrypted message")
 
-	fromBytes, err := h2.ID().MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := sha256.Sum256(append(fromBytes, encMsg...))
+	id := sha256.Sum256(append([]byte(h2.ID()), encMsg...))
 
 	err = client1.SendMessage(context.Background(), h3.ID(), h0.ID(), nil, encMsg)
 	if err != nil {

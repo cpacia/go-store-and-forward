@@ -577,11 +577,7 @@ func (svr *Server) handleStoreMessage(w ggio.Writer, pmes *pb.Message, from peer
 		return writeStatusMessage(w, pb.Message_NOT_REGISTERED)
 	}
 
-	fromBytes, err := from.MarshalBinary()
-	if err != nil {
-		return err
-	}
-	id := sha256.Sum256(append(fromBytes, encMsg.Message...))
+	id := sha256.Sum256(append([]byte(from), encMsg.Message...))
 
 	if err := svr.ds.Put(messageKey(to, id[:]), encMsg.Message); err != nil {
 		return err
