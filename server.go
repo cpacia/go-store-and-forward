@@ -2,7 +2,6 @@ package storeandforward
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"github.com/cpacia/go-store-and-forward/pb"
@@ -36,13 +35,12 @@ var log = logging.Logger("snf")
 // Server is a store and forward server which can be used for asynchronous
 // communication between peers on the network.
 type Server struct {
-	host               host.Host
-	ctx                context.Context
-	ds                 datastore.Datastore
-	replicationPeers   map[peer.ID]inet.Stream
-	authenticatedConns map[peer.ID]bool
-	protocol           protocol.ID
-	mtx                sync.RWMutex
+	host             host.Host
+	ctx              context.Context
+	ds               datastore.Datastore
+	replicationPeers map[peer.ID]inet.Stream
+	protocol         protocol.ID
+	mtx              sync.RWMutex
 }
 
 // NewServer returns a new store and forward server.
@@ -63,31 +61,17 @@ func NewServer(ctx context.Context, h host.Host, opts ...Option) (*Server, error
 	}
 
 	s := &Server{
-		host:               h,
-		ctx:                ctx,
-		authenticatedConns: make(map[peer.ID]bool),
-		ds:                 cfg.Datastore,
-		protocol:           cfg.Protocols[0],
-		replicationPeers:   repPeersMap,
-		mtx:                sync.RWMutex{},
+		host:             h,
+		ctx:              ctx,
+		ds:               cfg.Datastore,
+		protocol:         cfg.Protocols[0],
+		replicationPeers: repPeersMap,
+		mtx:              sync.RWMutex{},
 	}
 
 	for _, protocol := range cfg.Protocols {
 		h.SetStreamHandler(protocol, s.handleNewStream)
 	}
-
-	disConnected := func(_ inet.Network, conn inet.Conn) {
-		s.mtx.Lock()
-		delete(s.authenticatedConns, conn.RemotePeer())
-		s.mtx.Unlock()
-
-	}
-
-	notifier := &inet.NotifyBundle{
-		DisconnectedF: disConnected,
-	}
-
-	h.Network().Notify(notifier)
 
 	return s, nil
 }
@@ -129,31 +113,13 @@ func (svr *Server) streamHandler(s inet.Stream) {
 
 		var err error
 		switch pmes.Type {
-		case pb.Message_AUTHENTICATE:
-			err = svr.handleAuthenticate(s, reader, writer, pmes, remotePeer)
 		case pb.Message_REGISTER:
-			if !svr.isAuthenticated(remotePeer) {
-				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
-				break
-			}
 			err = svr.handleRegister(writer, pmes, remotePeer)
 		case pb.Message_UNREGISTER:
-			if !svr.isAuthenticated(remotePeer) {
-				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
-				break
-			}
 			err = svr.handleUnregister(writer, pmes, remotePeer)
 		case pb.Message_GET_MESSAGES:
-			if !svr.isAuthenticated(remotePeer) {
-				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
-				break
-			}
 			err = svr.handleGetMessages(writer, pmes, remotePeer)
 		case pb.Message_MESSAGE_ACK:
-			if !svr.isAuthenticated(remotePeer) {
-				err = writeStatusMessage(writer, pb.Message_UNAUTHORIZED)
-				break
-			}
 			err = svr.handleAckMessage(writer, pmes, remotePeer)
 		case pb.Message_PROVE_REGISTRATION:
 			err = svr.handleProveRegistrationMessage(writer, pmes, remotePeer)
@@ -184,90 +150,6 @@ func (svr *Server) streamHandler(s inet.Stream) {
 	}
 }
 
-func (svr *Server) isAuthenticated(p peer.ID) bool {
-	var authenticated bool
-	svr.mtx.RLock()
-	_, authenticated = svr.authenticatedConns[p]
-	svr.mtx.RUnlock()
-	return authenticated
-}
-
-// handleAuthenticate runs the authentication protocol which contains a challenge and response.
-func (svr *Server) handleAuthenticate(s inet.Stream, r ggio.Reader, w ggio.Writer, pmes *pb.Message, peer peer.ID) error {
-	log.Debugf("handleAuthenticate: peer %s", peer)
-	// Check to make sure we are not already authenticated.
-	svr.mtx.RLock()
-	_, ok := svr.authenticatedConns[peer]
-	svr.mtx.RUnlock()
-	if ok {
-		return writeStatusMessage(w, pb.Message_ALREADY_AUTHENTICATED)
-
-	}
-
-	// Parse pubkey and make sure it's valid.
-	pubkeyMsg := pmes.GetPubkey()
-	if pubkeyMsg == nil {
-		return writeStatusMessage(w, pb.Message_PUBKEY_INVALID)
-	}
-
-	pubkey, err := crypto.UnmarshalPublicKey(pubkeyMsg.Pubkey)
-	if err != nil {
-		return writeStatusMessage(w, pb.Message_PUBKEY_INVALID)
-	}
-
-	if !peer.MatchesPublicKey(pubkey) {
-		return writeStatusMessage(w, pb.Message_PUBKEY_INVALID)
-	}
-
-	// Send challenge message
-	challengeBytes := make([]byte, 32)
-	rand.Read(challengeBytes)
-	err = writeMsgWithTimeout(w, &pb.Message{
-		Type: pb.Message_CHALLENGE,
-		Payload: &pb.Message_Challenge_{
-			Challenge: &pb.Message_Challenge{
-				Challenge: challengeBytes,
-			},
-		},
-	})
-	if err != nil {
-		return err
-	}
-
-	// Read challenge response.
-	respMsg := new(pb.Message)
-	if err := readMsgWithTimeout(r, respMsg); err != nil {
-		return err
-	}
-
-	if respMsg.Type != pb.Message_RESPONSE {
-		return writeStatusMessage(w, pb.Message_MALFORMED_MESSAGE)
-	}
-
-	// Verify signature.
-	sigMsg := respMsg.GetSignature()
-	if sigMsg == nil {
-		return writeStatusMessage(w, pb.Message_SIGNATURE_INVALID)
-	}
-	valid, err := pubkey.Verify(challengeBytes, sigMsg.Signature)
-	if !valid || err != nil {
-		return writeStatusMessage(w, pb.Message_SIGNATURE_INVALID)
-	}
-
-	// Protect connection.
-	svr.host.ConnManager().Protect(peer, protectionTag)
-
-	// Add to authenticatedConns.
-	svr.mtx.Lock()
-	svr.authenticatedConns[peer] = true
-	svr.mtx.Unlock()
-
-	log.Infof("Peer %s authenticated successfully", peer)
-
-	// Write success response.
-	return writeStatusMessage(w, pb.Message_SUCCESS)
-}
-
 // handleRegister saves a user registration in the db. Duplicate registrations are allowed
 // and a prior registration is overridden.
 func (svr *Server) handleRegister(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
@@ -290,6 +172,14 @@ func (svr *Server) handleRegister(w ggio.Writer, pmes *pb.Message, from peer.ID)
 		pubKey, err = from.ExtractPublicKey()
 	}
 	if err != nil {
+		return writeStatusMessage(w, pb.Message_PUBKEY_INVALID)
+	}
+
+	checkID, err := peer.IDFromPublicKey(pubKey)
+	if err != nil {
+		return writeStatusMessage(w, pb.Message_PUBKEY_INVALID)
+	}
+	if checkID != from {
 		return writeStatusMessage(w, pb.Message_PUBKEY_INVALID)
 	}
 
@@ -322,9 +212,9 @@ func (svr *Server) handleRegister(w ggio.Writer, pmes *pb.Message, from peer.ID)
 }
 
 // handleUnregister unregisters a peer from this server.
-func (svr *Server) handleUnregister(w ggio.Writer, pmes *pb.Message, peer peer.ID) error {
-	log.Debugf("handleUnregister: peer %s", peer)
-	err := svr.ds.Delete(registrationKey(peer))
+func (svr *Server) handleUnregister(w ggio.Writer, pmes *pb.Message, from peer.ID) error {
+	log.Debugf("handleUnregister: peer %s", from)
+	err := svr.ds.Delete(registrationKey(from))
 	if err != nil {
 		return err
 	}

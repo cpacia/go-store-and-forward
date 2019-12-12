@@ -60,7 +60,7 @@ func NewClient(ctx context.Context, sk crypto.PrivKey, servers []peer.ID, h host
 
 	serverMap := make(map[peer.ID]bool)
 	for _, peer := range servers {
-		serverMap[peer] = false
+		serverMap[peer] = true
 	}
 
 	if len(cfg.Protocols) == 0 {
@@ -439,101 +439,13 @@ func (cli *Client) registerWithServers(expiration time.Duration) {
 	}()
 }
 
-func (cli *Client) authenticate(peer peer.ID) (inet.Stream, error) {
-	s, err := cli.host.NewStream(cli.ctx, peer, cli.protocol)
-	if err != nil {
-		return nil, err
-	}
-
-	// Protect connection.
-	cli.host.ConnManager().Protect(peer, protectionTag)
-
-	contextReader := ctxio.NewReader(cli.ctx, s)
-	r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
-	w := ggio.NewDelimitedWriter(s)
-
-	pubkeyBytes, err := cli.sk.GetPublic().Bytes()
-	if err != nil {
-		return nil, err
-	}
-	err = writeMsgWithTimeout(w, &pb.Message{
-		Type: pb.Message_AUTHENTICATE,
-		Payload: &pb.Message_Pubkey_{
-			Pubkey: &pb.Message_Pubkey{
-				Pubkey: pubkeyBytes,
-			},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	pmes := new(pb.Message)
-	if err := readMsgWithTimeout(r, pmes); err != nil {
-		return nil, err
-	}
-
-	challengeMsg := pmes.GetChallenge()
-	if challengeMsg == nil || challengeMsg.Challenge == nil {
-		return nil, fmt.Errorf("server %s sent us invalid challenge message", peer)
-	}
-
-	sig, err := cli.sk.Sign(challengeMsg.Challenge)
-	if err != nil {
-		return nil, err
-	}
-
-	err = writeMsgWithTimeout(w, &pb.Message{
-		Type: pb.Message_RESPONSE,
-		Payload: &pb.Message_Signature_{
-			Signature: &pb.Message_Signature{
-				Signature: sig,
-			},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	resp := new(pb.Message)
-	if err := readMsgWithTimeout(r, resp); err != nil {
-		return nil, err
-	}
-
-	if resp.Type != pb.Message_STATUS {
-		return nil, fmt.Errorf("server %s sent us an invalid challenge response", peer)
-	}
-
-	if resp.Code != pb.Message_SUCCESS {
-		return nil, fmt.Errorf("server %s sent rejected our authentication. code: %s", peer, resp.Code.String())
-	}
-	log.Debugf("Authenticated with server %s", peer)
-	return s, nil
-}
-
 func (cli *Client) registerSingle(server peer.ID, expiration time.Duration) {
-	var (
-		s          inet.Stream
-		err        error
-		registered bool
-	)
-	cli.mtx.RLock()
-	registered = cli.servers[server]
-	cli.mtx.RUnlock()
-
-	if !registered {
-		s, err = cli.authenticate(server)
-		if err != nil {
-			log.Errorf("Server %s authentication fail. Error: %s", server, err)
-			return
-		}
-	} else {
-		s, err = cli.host.NewStream(cli.ctx, server, cli.protocol)
-		if err != nil {
-			log.Errorf("Server %s authentication fail. Error: %s", server, err)
-			return
-		}
+	s, err := cli.host.NewStream(cli.ctx, server, cli.protocol)
+	if err != nil {
+		log.Errorf("Server %s authentication fail. Error: %s", server, err)
+		return
 	}
+	defer s.Close()
 
 	contextReader := ctxio.NewReader(cli.ctx, s)
 	r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)

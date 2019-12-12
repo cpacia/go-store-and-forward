@@ -20,18 +20,16 @@ message Message {
 
     enum Type {
         STATUS             = 0;
-        AUTHENTICATE       = 1;
-        CHALLENGE          = 2;
-        RESPONSE           = 3;
-        REGISTER           = 5;
-        UNREGISTER         = 6;
-        PROVE_REGISTRATION = 7;
-        STORE_MESSAGE      = 8;
-        GET_MESSAGE        = 9;
-        GET_MESSAGES       = 10;
-        MESSAGE            = 11;
-        MESSAGE_ACK        = 12;
-        REPLICATE          = 13;
+        RESPONSE           = 1;
+        REGISTER           = 2;
+        UNREGISTER         = 3;
+        PROVE_REGISTRATION = 4;
+        STORE_MESSAGE      = 5;
+        GET_MESSAGE        = 6;
+        GET_MESSAGES       = 7;
+        MESSAGE            = 8;
+        MESSAGE_ACK        = 9;
+        REPLICATE          = 10;
     }
 
     message Pubkey {
@@ -43,14 +41,6 @@ message Message {
         bytes pubkey                     = 2;
         bytes server                     = 3;
         bytes signature                  = 4;
-    }
-
-    message Challenge {
-        bytes challenge = 1;
-    }
-
-    message Signature {
-        bytes signature = 1;
     }
 
     message EncryptedMessage {
@@ -74,12 +64,10 @@ message Message {
     oneof payload {
         Pubkey pubkey                     = 2;
         Registration registration         = 3;
-        Challenge challenge               = 4;
-        Signature signature               = 5;
-        EncryptedMessage encryptedMessage = 6;
-        Ack ack                           = 7;
-        IDs ids                           = 8;
+        EncryptedMessage encryptedMessage = 4;
+        Ack ack                           = 5;
+        IDs ids                           = 6;
     }
 
-    Status code = 9;   // Status code.
+    Status code = 7;   // Status code.
 }

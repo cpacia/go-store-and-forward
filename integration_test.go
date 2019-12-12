@@ -41,53 +41,6 @@ func newPeer() (crypto.PrivKey, ma.Multiaddr, error) {
 	return sk, a, nil
 }
 
-func Test_Authentication(t *testing.T) {
-	mn, err := mocknet.WithNPeers(context.Background(), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	server, err := NewServer(context.Background(), mn.Hosts()[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sk, a, err := newPeer()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = mn.AddPeer(sk, a)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := mn.LinkAll(); err != nil {
-		t.Fatal(err)
-	}
-
-	client, err := NewClient(context.Background(), sk, []peer.ID{}, mn.Hosts()[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := client.authenticate(server.host.ID()); err != nil {
-		t.Fatal(err)
-	}
-
-	if !server.authenticatedConns[client.host.ID()] {
-		t.Fatal("Authentication failed")
-	}
-
-	if err := mn.DisconnectPeers(mn.Peers()[0], mn.Peers()[1]); err != nil {
-		t.Fatal(err)
-	}
-
-	if client.servers[client.host.ID()] {
-		t.Fatal("Failed to remove authenticated peer")
-	}
-}
-
 func Test_Registration(t *testing.T) {
 	mn, err := mocknet.WithNPeers(context.Background(), 1)
 	if err != nil {
@@ -119,10 +72,6 @@ func Test_Registration(t *testing.T) {
 	}
 
 	client.registerSingle(server.host.ID(), time.Hour)
-
-	if !server.authenticatedConns[client.host.ID()] {
-		t.Fatal("Authentication failed")
-	}
 
 	_, err = server.ds.Get(registrationKey(client.host.ID()))
 	if err != nil {
