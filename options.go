@@ -29,7 +29,7 @@ type Options struct {
 func (o *Options) Apply(opts ...Option) error {
 	for i, opt := range opts {
 		if err := opt(o); err != nil {
-			return fmt.Errorf("dht option %d failed: %s", i, err)
+			return fmt.Errorf("snf option %d failed: %s", i, err)
 		}
 	}
 	return nil
