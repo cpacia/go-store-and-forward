@@ -205,7 +205,7 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error)
 }
 
 // SendMessage stores the message with the provided server.
-func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, pubkey crypto.PubKey, encryptedMessage []byte) error {
+func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, pubkey crypto.PubKey, encryptedMessage, metadata []byte) error {
 	log.Debugf("Sending message to server %s", server)
 	s, err := cli.host.NewStream(ctx, server, cli.protocol)
 	if err != nil {
@@ -285,8 +285,9 @@ func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, pubkey c
 		Type: pb.Message_STORE_MESSAGE,
 		Payload: &pb.Message_EncryptedMessage_{
 			EncryptedMessage: &pb.Message_EncryptedMessage{
-				Message: encryptedMessage,
-				PeerID:  []byte(to),
+				Message:  encryptedMessage,
+				PeerID:   []byte(to),
+				Metadata: metadata,
 			},
 		},
 	})

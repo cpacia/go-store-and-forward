@@ -44,10 +44,11 @@ message Message {
     }
 
     message EncryptedMessage {
-        bytes peerID  = 1;
+        bytes peerID    = 1;
         bytes messageID = 2;
         bytes message   = 3;
-        bool more       = 4;
+        bytes metadata  = 4;
+        bool more       = 5;
     }
 
     message Ack {
