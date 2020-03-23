@@ -9,7 +9,6 @@ message Message {
     enum Status {
         NA                         = 0;
         SUCCESS                    = 100;
-        ALREADY_AUTHENTICATED      = 210;
         PUBKEY_INVALID             = 250;
         SIGNATURE_INVALID          = 251;
         PEERID_INVALID             = 252;

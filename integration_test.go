@@ -137,7 +137,7 @@ func Test_Messages(t *testing.T) {
 		encMsg = []byte("encrypted message")
 	)
 
-	if err := client1.SendMessage(context.Background(), h2.ID(), mn.Hosts()[0].ID(), nil, encMsg); err != nil {
+	if err := client1.SendMessage(context.Background(), h2.ID(), mn.Hosts()[0].ID(), nil, encMsg, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -172,7 +172,7 @@ func Test_Messages(t *testing.T) {
 
 	// Make sure second message goes through.
 	encMsg = []byte("encrypted message2")
-	if err := client1.SendMessage(context.Background(), h2.ID(), mn.Hosts()[0].ID(), nil, encMsg); err != nil {
+	if err := client1.SendMessage(context.Background(), h2.ID(), mn.Hosts()[0].ID(), nil, encMsg, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -270,7 +270,7 @@ func Test_Replication(t *testing.T) {
 
 	id := sha256.Sum256(append([]byte(h2.ID()), encMsg...))
 
-	err = client1.SendMessage(context.Background(), h3.ID(), h0.ID(), nil, encMsg)
+	err = client1.SendMessage(context.Background(), h3.ID(), h0.ID(), nil, encMsg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
