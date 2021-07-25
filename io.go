@@ -4,20 +4,25 @@ import (
 	"context"
 	"errors"
 	"github.com/cpacia/go-store-and-forward/pb"
-	ggio "github.com/gogo/protobuf/io"
 	"github.com/gogo/protobuf/proto"
+	"github.com/libp2p/go-msgio"
 	"time"
 )
 
 var ReadWriteTimeout = time.Second * 30
 
-func writeMsgWithTimeout(w ggio.Writer, pmes *pb.Message) error {
+func writeMsgWithTimeout(w msgio.Writer, pmes *pb.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), ReadWriteTimeout)
 	defer cancel()
 
 	errCh := make(chan error)
 	go func() {
-		errCh <- w.WriteMsg(pmes)
+		msgBytes, err := proto.Marshal(pmes)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		errCh <- w.WriteMsg(msgBytes)
 	}()
 
 	select {
@@ -28,13 +33,18 @@ func writeMsgWithTimeout(w ggio.Writer, pmes *pb.Message) error {
 	}
 }
 
-func readMsgWithTimeout(r ggio.Reader, msg proto.Message) error {
+func readMsgWithTimeout(r msgio.Reader, msg proto.Message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), ReadWriteTimeout)
 	defer cancel()
 
 	doneCh := make(chan error)
 	go func() {
-		err := r.ReadMsg(msg)
+		msgBytes, err := r.ReadMsg()
+		if err != nil {
+			doneCh <- err
+			return
+		}
+		err = proto.Unmarshal(msgBytes, msg)
 		doneCh <- err
 	}()
 

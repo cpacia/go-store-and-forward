@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/cpacia/go-store-and-forward/pb"
-	ggio "github.com/gogo/protobuf/io"
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
 	ctxio "github.com/jbenet/go-context/io"
@@ -14,6 +13,7 @@ import (
 	inet "github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
+	"github.com/libp2p/go-msgio"
 	"github.com/pkg/errors"
 	"io"
 	"math/rand"
@@ -153,8 +153,8 @@ func (cli *Client) GetMessagesAsync(ctx context.Context) (<-chan Message, error)
 				defer s.Close()
 
 				contextReader := ctxio.NewReader(ctx, s)
-				r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
-				w := ggio.NewDelimitedWriter(s)
+				r := msgio.NewVarintReaderSize(contextReader, inet.MessageSizeMax)
+				w := msgio.NewVarintWriter(s)
 
 				err = writeMsgWithTimeout(w, &pb.Message{
 					Type: pb.Message_GET_MESSAGES,
@@ -213,9 +213,9 @@ func (cli *Client) SendMessage(ctx context.Context, to, server peer.ID, pubkey c
 	}
 	defer s.Close()
 
-	w := ggio.NewDelimitedWriter(s)
+	w := msgio.NewVarintWriter(s)
 	contextReader := ctxio.NewReader(ctx, s)
-	r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
+	r := msgio.NewVarintReaderSize(contextReader, inet.MessageSizeMax)
 
 	cli.mtx.RLock()
 	expiry, ok := cli.cachedRegistrations[to]
@@ -325,8 +325,8 @@ func (cli *Client) AckMessage(ctx context.Context, messageID []byte) error {
 				defer s.Close()
 
 				contextReader := ctxio.NewReader(cli.ctx, s)
-				r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
-				w := ggio.NewDelimitedWriter(s)
+				r := msgio.NewVarintReaderSize(contextReader, inet.MessageSizeMax)
+				w := msgio.NewVarintWriter(s)
 
 				err = writeMsgWithTimeout(w, &pb.Message{
 					Type: pb.Message_MESSAGE_ACK,
@@ -363,7 +363,7 @@ func (cli *Client) handleNewStream(s inet.Stream) {
 func (cli *Client) streamHandler(s inet.Stream) {
 	defer s.Close()
 	contextReader := ctxio.NewReader(cli.ctx, s)
-	reader := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
+	reader := msgio.NewVarintReaderSize(contextReader, inet.MessageSizeMax)
 	remotePeer := s.Conn().RemotePeer()
 
 	for {
@@ -374,13 +374,23 @@ func (cli *Client) streamHandler(s inet.Stream) {
 		}
 
 		pmes := new(pb.Message)
-		if err := reader.ReadMsg(pmes); err != nil {
+		msgBytes, err := reader.ReadMsg()
+		if err != nil {
+			reader.ReleaseMsg(msgBytes)
 			s.Reset()
 			if err == io.EOF {
 				log.Debugf("server %s closed stream", remotePeer)
 			}
 			return
 		}
+
+		err = proto.Unmarshal(msgBytes, pmes)
+		if err != nil {
+			reader.ReleaseMsg(msgBytes)
+			s.Reset()
+			return
+		}
+		reader.ReleaseMsg(msgBytes)
 
 		if pmes.Type != pb.Message_MESSAGE || pmes.GetEncryptedMessage() == nil {
 			log.Errorf("Server %s sending malformed MESSAGE", remotePeer)
@@ -449,8 +459,8 @@ func (cli *Client) registerSingle(server peer.ID, expiration time.Duration) {
 	defer s.Close()
 
 	contextReader := ctxio.NewReader(cli.ctx, s)
-	r := ggio.NewDelimitedReader(contextReader, inet.MessageSizeMax)
-	w := ggio.NewDelimitedWriter(s)
+	r := msgio.NewVarintReaderSize(contextReader, inet.MessageSizeMax)
+	w := msgio.NewVarintWriter(s)
 
 	ts, err := ptypes.TimestampProto(time.Now().Add(expiration))
 	if err != nil {
